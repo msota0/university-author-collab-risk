@@ -9,8 +9,14 @@ from fastapi import FastAPI, Query
 from fastapi.middleware.cors import CORSMiddleware
 
 from .data_loader import list_um_authors, load_graph, reset_cache
-from .graph_builder import compute_risk_paths, compute_summary, shared_works_between
+from .graph_builder import (
+    compute_risk_paths,
+    compute_summary,
+    expand_neighbors,
+    shared_works_between,
+)
 from .models import (
+    ExpandResponse,
     RiskPathsResponse,
     RiskSummaryResponse,
     SharedWorksResponse,
@@ -64,6 +70,19 @@ def get_summary(seed_author_id: str = Query(...)):
 def get_shared_works(source: str = Query(...), target: str = Query(...)):
     """Shared publications behind a co-authorship edge."""
     return shared_works_between(source, target)
+
+
+@app.get("/review/expand", response_model=ExpandResponse)
+def get_expand(
+    author_id: str = Query(..., description="OpenAlex author ID to expand."),
+    limit: int = Query(75, ge=1, le=500, description="Max neighbours to return."),
+):
+    """
+    Return the full one-hop neighbourhood of an author (capped to `limit`),
+    so the UI can grow a real next-depth network when expanding a direct
+    collaborator — not just the flagged-country slice.
+    """
+    return expand_neighbors(author_id, limit=limit)
 
 
 @app.post("/admin/reload")

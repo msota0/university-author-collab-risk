@@ -14,7 +14,13 @@ risk paths instead of a hairball.
 from collections import defaultdict
 from typing import Dict, List, Tuple
 
-from .data_loader import load_graph, load_review_countries, load_works_df
+from .data_loader import (
+    load_dimensions_enrichment,
+    load_graph,
+    load_review_countries,
+    load_scopus_enrichment,
+    load_works_df,
+)
 
 
 def _index_graph(graph: Dict) -> Tuple[Dict[str, Dict], Dict[str, Dict[str, Dict]]]:
@@ -28,7 +34,7 @@ def _index_graph(graph: Dict) -> Tuple[Dict[str, Dict], Dict[str, Dict[str, Dict
 
 
 def _make_node(node: Dict, node_type: str) -> Dict:
-    return {
+    out = {
         "id": str(node["id"]),
         "label": node.get("label", ""),
         "country": node.get("country", "Unknown"),
@@ -36,6 +42,31 @@ def _make_node(node: Dict, node_type: str) -> Dict:
         "is_um_author": bool(node.get("is_um_author", False)),
         "node_type": node_type,
     }
+    _attach_enrichment(out)
+    return out
+
+
+def _attach_enrichment(node: Dict) -> None:
+    """Merge Scopus + Dimensions enrichment (if loaded) onto a node payload."""
+    scopus = load_scopus_enrichment().get(node["id"])
+    if scopus:
+        node["scopus"] = scopus
+        # Surface a top-level "current_affiliation_mismatch" hint when Scopus's
+        # current institution country disagrees with the graph's. That's the
+        # highest-signal Scopus correction.
+        scopus_country = (scopus.get("current_affiliation_country") or "").upper()
+        graph_country = (node.get("country") or "").upper()
+        if scopus_country and graph_country and scopus_country != graph_country:
+            node["affiliation_mismatch"] = {
+                "graph_country": graph_country,
+                "scopus_country": scopus_country,
+                "scopus_affiliation": scopus.get("current_affiliation", ""),
+            }
+    dim = load_dimensions_enrichment().get(node["id"])
+    if dim:
+        node["dimensions"] = dim
+        if dim.get("has_review_country_funding"):
+            node["funding_risk"] = True
 
 
 def compute_risk_paths(seed_author_id: str) -> Dict:
@@ -146,6 +177,94 @@ def compute_summary(seed_author_id: str) -> Dict:
         "direct_collaborators_with_indirect_risk": len(direct_ids),
         "flagged_second_hop_authors": len(flagged_ids),
         "country_breakdown": dict(by_country),
+    }
+
+
+def expand_neighbors(author_id: str, limit: int = 75) -> Dict:
+    """
+    Return the *full* one-hop neighbourhood of an author (capped to `limit`,
+    sorted by edge weight descending). Used by the UI when the user expands
+    a direct collaborator and wants to see all their co-authors, not just
+    the flagged ones from the risk slice.
+
+    Neighbours whose country is on review_countries.csv are typed as
+    "flagged_second_hop" (orange in the UI); others are typed as "neighbor"
+    (neutral grey). The seed/UM author is excluded from results — adding the
+    seed back as a "neighbour" would create a misleading loop in the petal.
+    """
+    graph = load_graph()
+    review_countries = load_review_countries()
+    nodes_by_id, adjacency = _index_graph(graph)
+
+    self_node = nodes_by_id.get(author_id)
+    if self_node is None:
+        # Not in the precomputed graph — fall back to a live OpenAlex lookup.
+        # This keeps ad-hoc reviewer workflows working for arbitrary author IDs
+        # without requiring a re-ingest first.
+        from .live_lookup import fetch_live_neighborhood
+
+        return fetch_live_neighborhood(author_id, limit)
+
+    seed_info = {
+        "id": str(self_node["id"]),
+        "label": self_node.get("label", ""),
+        "country": self_node.get("country", "Unknown"),
+        "institution": self_node.get("institution", ""),
+        "is_um_author": bool(self_node.get("is_um_author", False)),
+        "node_type": "seed",
+    }
+    _attach_enrichment(seed_info)
+
+    raw_neighbors = adjacency.get(author_id, {})
+    sorted_pairs = sorted(
+        raw_neighbors.items(),
+        key=lambda kv: int(kv[1].get("weight", 1) or 1),
+        reverse=True,
+    )
+
+    out_nodes: List[Dict] = []
+    out_edges: List[Dict] = []
+    shown = 0
+    for nid, edge in sorted_pairs:
+        if shown >= limit:
+            break
+        n = nodes_by_id.get(nid)
+        if n is None or n.get("is_um_author"):
+            continue
+        country = (n.get("country") or "").upper()
+        is_flagged = country in review_countries
+        node_type = "flagged_second_hop" if is_flagged else "neighbor"
+        node_out = {
+            "id": str(n["id"]),
+            "label": n.get("label", ""),
+            "country": n.get("country", "Unknown"),
+            "institution": n.get("institution", ""),
+            "is_um_author": False,
+            "node_type": node_type,
+        }
+        if is_flagged:
+            node_out["flag_reason"] = review_countries[country].get("flag_reason", "")
+            node_out["risk_level"] = review_countries[country].get("risk_level", "")
+        _attach_enrichment(node_out)
+        out_nodes.append(node_out)
+        out_edges.append(
+            {
+                "source": author_id,
+                "target": str(n["id"]),
+                "weight": int(edge.get("weight", 1) or 1),
+                "edge_type": "indirect_risk_path" if is_flagged else "neighbor",
+            }
+        )
+        shown += 1
+
+    return {
+        "author_id": author_id,
+        "seed": seed_info,
+        "neighbor_count": len(raw_neighbors),
+        "shown_count": shown,
+        "nodes": out_nodes,
+        "edges": out_edges,
+        "live": False,
     }
 
 

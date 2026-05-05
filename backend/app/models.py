@@ -14,6 +14,31 @@ class UMAuthor(BaseModel):
     country: Optional[str] = ""
 
 
+class ScopusEnrichment(BaseModel):
+    scopus_id: Optional[str] = ""
+    h_index: Optional[str] = ""
+    document_count: Optional[str] = ""
+    current_affiliation: Optional[str] = ""
+    current_affiliation_country: Optional[str] = ""
+    affiliation_history: Optional[str] = ""
+
+
+class DimensionsEnrichment(BaseModel):
+    dimensions_researcher_id: Optional[str] = ""
+    grant_count: Optional[int] = 0
+    patent_count: Optional[int] = 0
+    funder_countries: Optional[str] = ""
+    has_review_country_funding: Optional[bool] = False
+    grants: Optional[str] = ""
+    patents: Optional[str] = ""
+
+
+class AffiliationMismatch(BaseModel):
+    graph_country: str
+    scopus_country: str
+    scopus_affiliation: str
+
+
 class RiskNode(BaseModel):
     id: str
     label: str
@@ -24,6 +49,10 @@ class RiskNode(BaseModel):
     indirect_risk_count: Optional[int] = None
     flag_reason: Optional[str] = None
     risk_level: Optional[str] = None
+    scopus: Optional[ScopusEnrichment] = None
+    dimensions: Optional[DimensionsEnrichment] = None
+    affiliation_mismatch: Optional[AffiliationMismatch] = None
+    funding_risk: Optional[bool] = None
 
 
 class RiskEdge(BaseModel):
@@ -46,6 +75,16 @@ class RiskSummaryResponse(BaseModel):
     direct_collaborators_with_indirect_risk: int
     flagged_second_hop_authors: int
     country_breakdown: Dict[str, int]
+
+
+class ExpandResponse(BaseModel):
+    author_id: str
+    seed: Optional[RiskNode] = None
+    neighbor_count: int
+    shown_count: int
+    nodes: List[RiskNode] = []
+    edges: List[RiskEdge] = []
+    live: Optional[bool] = False
 
 
 class SharedWork(BaseModel):
